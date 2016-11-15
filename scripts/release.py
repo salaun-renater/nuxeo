@@ -57,14 +57,13 @@ No maintenance branch"""
 from collections import namedtuple
 from datetime import datetime
 import fnmatch
-from lxml import etree
 import optparse
 import os
 import re
 import shutil
 import sys
 import tempfile
-
+from lxml import etree
 from IndentedHelpFormatterWithNL import IndentedHelpFormatterWithNL
 from nxutils import ExitException, Repository, assert_git_config, extract_zip, \
     log, make_zip, system
@@ -102,6 +101,40 @@ def etree_parse(xmlfile):
                             (xmlfile, e.message))
     return tree
 
+# pylint: disable-msg=too-many-instance-attributes
+# pylint: disable-msg=too-few-public-methods
+class ReleaseInfo(object):
+    """Release information. This object is used to construct a Release as well as to (de)serialize it."""
+
+    # pylint: disable-msg=too-many-arguments
+    # pylint: disable-msg=too-many-locals
+    def __init__(self, module=None, remote_alias=None, branch=None, snapshot=None, tag=None,
+                 next_snapshot=None, maintenance_version=None, is_final=False, skip_tests=False,
+                 skip_its=False, profiles=None, other_versions=None, files_pattern=None, props_pattern=None,
+                 msg_commit=None, msg_tag=None, auto_increment_policy=None):
+        self.module = module
+        self.remote_alias = remote_alias
+        self.branch = branch
+        self.snapshot = snapshot
+        self.tag = tag
+        self.next_snapshot = next_snapshot
+        self.maintenance_version = maintenance_version
+        self.is_final = is_final
+        self.skip_tests = skip_tests
+        self.skip_its = skip_its
+        self.profiles = profiles
+        self.other_versions = other_versions
+        self.files_pattern = files_pattern
+        self.props_pattern = props_pattern
+        self.msg_commit = msg_commit
+        self.msg_tag = msg_tag
+        self.auto_increment_policy = auto_increment_policy
+
+    def compute_other_versions(self):
+        self.other_versions = ':'.join((self.files_pattern, self.props_pattern, self.other_versions))
+        if self.other_versions == "::":
+            self.other_versions = None
+
 
 # pylint: disable=R0902
 class Release(object):
@@ -125,40 +158,54 @@ given the path parameter.
         'path': root path of the repository being released."""
         release_log = Release.get_release_log(path)
         log("Reading parameters from %s ..." % release_log)
+        release_info = ReleaseInfo()
         with open(release_log, "rb") as f:
-            remote_alias = f.readline().split("=")[1].strip()
-            branch = f.readline().split("=")[1].strip()
-            tag = f.readline().split("=")[1].strip()
-            next_snapshot = f.readline().split("=")[1].strip()
-            maintenance_version = f.readline().split("=")[1].strip()
-            is_final = f.readline().split("=")[1].strip() == "True"
-            skipTests = f.readline().split("=")[1].strip() == "True"
-            skipITs = f.readline().split("=")[1].strip() == "True"
-            profiles = f.readline().split("=")[1].strip()
-            other_versions = f.readline().split("=")[1].strip()
-            files_pattern = f.readline().split("=")[1].strip()
-            props_pattern = f.readline().split("=")[1].strip()
-            other_versions = ':'.join((files_pattern, props_pattern,
-                                       other_versions))
-            msg_commit = f.readline().split("=")[1].strip()
-            msg_tag = f.readline().split("=")[1].strip()
-            auto_increment_policy = f.readline().split("=")[1].strip()
-        if other_versions == "::":
-            other_versions = None
-        return (remote_alias, branch, tag, next_snapshot,
-                maintenance_version, is_final, skipTests, skipITs, profiles,
-                other_versions, msg_commit, msg_tag, auto_increment_policy)
+            for line in f:
+                (key, value) = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if key == "MODULE":
+                    release_info.module = value
+                elif key == "REMOTE":
+                    release_info.remote_alias = value
+                elif key == "BRANCH":
+                    release_info.branch = value
+                elif key == "SNAPSHOT":
+                    release_info.snapshot = value
+                elif key == "TAG":
+                    release_info.tag = value
+                elif key == "NEXT_SNAPSHOT":
+                    release_info.next_snapshot = value
+                elif key == "MAINTENANCE":
+                    release_info.maintenance_version = value
+                elif key == "FINAL":
+                    release_info.is_final = value == "True"
+                elif key == "SKIP_TESTS":
+                    release_info.skip_tests = value == "True"
+                elif key == "SKIP_ITS":
+                    release_info.skip_its = value == "True"
+                elif key == "PROFILES":
+                    release_info.profiles = value
+                elif key == "OTHER_VERSIONS":
+                    release_info.other_versions = value
+                elif key == "FILES_PATTERN":
+                    release_info.files_pattern = value
+                elif key == "PROPS_PATTERN":
+                    release_info.props_pattern = value
+                elif key == "MSG_COMMIT":
+                    release_info.msg_commit = value
+                elif key == "MSG_TAG":
+                    release_info.msg_tag = value
+                elif key == "AUTO_INCREMENT_POLICY":
+                    release_info.auto_increment_policy = value
+                else:
+                    log("[WARN] Release info parsing failure for file %s on line: %s" % (release_log, line), sys.stderr)
+        release_info.compute_other_versions()
+        return release_info
 
     # pylint: disable=R0913
-    def __init__(self, repo, branch, tag, next_snapshot,
-                 maintenance_version="auto",
-                 is_final=False,
-                 skipTests=False,
-                 skipITs=False,
-                 other_versions=None,
-                 profiles='',
-                 msg_commit='',
-                 msg_tag='',
+    def __init__(self, repo, branch, tag, next_snapshot, maintenance_version="auto", is_final=False, skipTests=False,
+                 skipITs=False, other_versions=None, profiles='', msg_commit='', msg_tag='',
                  auto_increment_policy='auto_patch'):
         self.repo = repo
         self.branch = branch
@@ -322,22 +369,24 @@ given the path parameter.
                 self.repo.basedir, os.pardir,
                 "release-%s.log" % os.path.basename(self.repo.basedir)))
             with open(release_log, "wb") as f:
-                f.write("REMOTE=%s\nBRANCH=%s\nTAG=%s\nNEXT_SNAPSHOT=%s\n"
-                        "MAINTENANCE=%s\nFINAL=%s\nSKIP_TESTS=%s\n"
-                        "SKIP_ITS=%s\nPROFILES=%s\nOTHER_VERSIONS=%s\n"
-                        "FILES_PATTERN=%s\nPROPS_PATTERN=%s\nMSG_COMMIT=%s\n"
-                        "MSG_TAG=%s\nAUTO_INCREMENT_POLICY=%s\n" %
-                        (self.repo.alias, self.branch, self.tag,
-                         self.next_snapshot, self.maintenance_version,
-                         self.is_final, self.skipTests, self.skipITs,
-                         self.profiles,
-                         (','.join('/'.join(other_version)
-                                   for other_version in self.other_versions)),
-                         self.custom_patterns.files,
-                         self.custom_patterns.props[35:],
-                         self.msg_commit,
-                         self.msg_tag,
-                         self.auto_increment_policy))
+                f.write("MODULE=%s\n" % os.path.basename(self.repo.basedir) +
+                        "REMOTE=%s\n" % self.repo.alias +
+                        "BRANCH=%s\n" % self.branch +
+                        "SNAPSHOT=%s\n" % self.snapshot +
+                        "TAG=%s\n" % self.tag +
+                        "NEXT_SNAPSHOT=%s\n" % self.next_snapshot +
+                        "MAINTENANCE=%s\n" % self.maintenance_version +
+                        "FINAL=%s\n" % self.is_final +
+                        "SKIP_TESTS=%s\n" % self.skipTests +
+                        "SKIP_ITS=%s\n" % self.skipITs +
+                        "PROFILES=%s\n" % self.profiles +
+                        "OTHER_VERSIONS=%s\n" % (','.join('/'.join(other_version)
+                                                          for other_version in self.other_versions)) +
+                        "FILES_PATTERN=%s\n" % self.custom_patterns.files +
+                        "PROPS_PATTERN=%s\n" % self.custom_patterns.props[35:] +
+                        "MSG_COMMIT=%s\n" % self.msg_commit +
+                        "MSG_TAG=%s\n" % self.msg_tag +
+                        "AUTO_INCREMENT_POLICY=%s\n" % self.auto_increment_policy)
             log("Parameters stored in %s" % release_log)
         log("")
 
@@ -913,13 +962,29 @@ Note: 'auto_last' is not recommended since 1 = 1.0 = 1.0.0, then the zero being 
             raise ExitException(
                 1, "'command' must be a single argument: '%s'." % (args)
                 + " See usage with '-h'.")
-        if ("command" in locals() and command == "perform"
-            and os.path.isfile(Release.get_release_log(os.getcwd()))
-                and options == parser.get_default_values()):
-            (options.remote_alias, options.branch, options.tag, options.next_snapshot, options.maintenance_version,
-             options.is_final, options.skipTests, options.skipITs, options.profiles, options.other_versions,
-             options.msg_commit, options.msg_tag,
-             options.auto_increment_policy) = Release.read_release_log(os.getcwd())
+
+        release_info = ReleaseInfo()
+        if ("command" in locals() and command == "perform" and os.path.isfile(Release.get_release_log(os.getcwd()))
+            and options == parser.get_default_values()):
+            release_info.read_release_log(os.getcwd())
+
+            release_info = Release.read_release_log(os.getcwd())
+            options.remote_alias = release_info.remote_alias
+            options.branch = release_info.branch
+            options.tag = release_info.tag
+            options.next_snapshot = release_info.next_snapshot
+            options.maintenance_version = release_info.maintenance_version
+            options.is_final = release_info.is_final
+            options.skipTests = release_info.skip_tests
+            options.skipITs = release_info.skip_its
+            options.profiles = release_info.profiles
+            options.other_versions = release_info.other_versions
+            options.msg_commit = release_info.msg_commit
+            options.msg_tag = release_info.msg_tag
+            options.auto_increment_policy = release_info.auto_increment_policy
+        else:
+            release_info
+
         repo = Repository(os.getcwd(), options.remote_alias)
         system("git fetch %s" % (options.remote_alias))
         if "command" in locals():
