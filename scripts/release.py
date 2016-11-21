@@ -304,8 +304,9 @@ class Release(object):
             date = datetime.now().strftime("%Y%m%d_%H%M")
             self.tag = self.snapshot.replace("-SNAPSHOT", "-I" + date)
 
-    def auto_increment(self, current_version, policy):
+    def auto_increment(self, current_version, policy_in):
         next_version = current_version
+        policy = re.sub('_(no_zero)', '', policy_in)
         semver = re.compile('^(?P<major>(?:0|[1-9][0-9]*))'
                             '(?:\\.(?P<minor>(?:0|[1-9][0-9]*)))?'
                             '(?:\\.(?P<patch>(?:0|[1-9][0-9]*)))?')
@@ -324,7 +325,7 @@ class Release(object):
                 int(verinfo['patch']))
         elif verinfo['minor']:
             if policy == 'auto_major':
-                verinfo['minor'] = 0
+                verinfo['minor'] = 0 if policy_in != 'auto_major_no_zero' else 1
             next_version = '%d.%d-SNAPSHOT' % (
                 int(verinfo['major']),
                 int(verinfo['minor']))
